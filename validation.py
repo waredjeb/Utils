@@ -8,27 +8,71 @@ import math as m
 import mplhep as hep
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import numpy as np
+from numba import jit, njit, types, prange, typed, typeof, int64, float64
+from numba.experimental import jitclass
+from numba.typed import List
+from tqdm import tqdm
+from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning
+import warnings
 
-plt.style.use(hep.style.CMS)
+warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
+warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
 
-class Point3D:
-  def __init__(self, x,y,z, eta, phi):
-    self.x = x
-    self.y = y
-    self.z = z
-    self.eta = eta
-    self.phi = phi
-
-
+spec_trackster = [
+    ('energy', types.float64),
+    ('index', types.int64),
+    ('x', types.float64),  # optional for handling empty lists
+    ('y', types.float64),  # optional for handling empty lists
+    ('z', types.float64),  # optional for handling empty lists
+    ('eta', types.float64),  # optional for handling empty lists
+    ('phi', types.float64),  # optional for handling empty lists
+    ('ev', types.int64)
+]
+@jitclass(spec_trackster)
 class Trackster:
-  def __init__(self, energy: float, barycenter: Point3D, index : int):
-    self.energy = energy
-    self.barycenter = barycenter
-    self.index = index
-    self.eta = barycenter.eta
-    self.phi = barycenter.phi
+   def __init__(self, energy = 0, x = 0, y = 0, z = 0, eta= 0, phi = 0,  index = 0, ev = -1):
+       self.energy = energy
+       self.index = index
+       self.x = x
+       self.y = y
+       self.z = z
+       self.eta = eta
+       self.phi = phi
+       self.ev = ev
 
-def create_trackster(trackstersMerged_ev, ri):
+@njit
+def argmaxNumba(arr):
+    if len(arr) == 0:
+        raise ValueError("argmax: array is empty")
+    
+    max_index = 0
+    max_value = arr[0]
+
+    for i in range(1, len(arr)):
+        if arr[i] > max_value:
+            max_value = arr[i]
+            max_index = i
+
+    return max_index
+
+@njit
+def argminNumba(arr):
+    if len(arr) == 0:
+        raise ValueError("argmin: array is empty")
+    
+    min_index = 0
+    min_value = arr[0]
+
+    for i in range(1, len(arr)):
+        if arr[i] < min_value:
+            min_value = arr[i]
+            min_index = i
+
+    return min_index
+
+@njit
+def create_trackster(trackstersMerged_ev, ri, ev):
     energyReco = trackstersMerged_ev.raw_energy[ri]
     xReco = trackstersMerged_ev.barycenter_x[ri]
     yReco = trackstersMerged_ev.barycenter_y[ri]
@@ -36,14 +80,9 @@ def create_trackster(trackstersMerged_ev, ri):
     etaReco = trackstersMerged_ev.barycenter_eta[ri]
     phiReco = trackstersMerged_ev.barycenter_phi[ri]
     
-    pointReco = np.array([xReco, yReco, zReco, etaReco, phiReco], dtype=np.float64)
-    
-    # Assuming Trackster is a class with appropriate constructor
-    point = Point3D(xReco, yReco, zReco, etaReco, phiReco)
-    tracksterReco = Trackster(energyReco,point, ri) 
+    tracksterReco = Trackster(energyReco, xReco, yReco, zReco, etaReco, phiReco, ri, ev) 
     
     return tracksterReco
-
 
 def create_efficiency_plots(numerator_list, denominator_list, minX, maxX, bins, variable_name, yTitle, title, plotName):
     # Create histograms for passing and total
@@ -80,11 +119,12 @@ def create_efficiency_plots(numerator_list, denominator_list, minX, maxX, bins, 
     plt.legend()
 
     # Create the "plots" directory if it doesn't exist
-    if not os.path.exists("./plots"):
-        os.makedirs("./plots")
+    plotDir = 'plotsNumba' 
+    if not os.path.exists(plotDir):
+        os.makedirs(plotDir)
 
     # Save the plot
-    plot_filename = os.path.join("plots", f"{plotName}_{variable_name}.png")
+    plot_filename = os.path.join(plotDir,  f"{plotName}_{variable_name}.png")
     plt.savefig(plot_filename)
 
 
@@ -114,82 +154,98 @@ for f in tqdm(files):
     association_data.append(associations.arrays(associations.keys()))
     simTrackstersCP_data.append(simtrackstersCP.arrays(simtrackstersCP.keys()))
 
+@njit
+def process_event(association_data, simTrackstersCP_data, trackstersMerged_data): 
+    num_events = 800
+    all_tracksters = [] 
+    all_simtracksters = []
+    fake_tracksters = []
+    efficient_simtracksters = []
+    pure_simtracksters = []
+    efficient_simtracksters_corrected = []
+    merged_tracksters = []
+    for f in prange(len(association_data)):
+        association_f = association_data[f]
+        simTrackstersCP_f = simTrackstersCP_data[f]
+        trackstersMerged_f = trackstersMerged_data[f]
 
-#compute fake rate and duplicate
-fake_tracksters = []
-merged_tracksters = []
-all_tracksters = []
-efficient_simtracksters = []
-efficient_simtracksters_corrected = []
-pure_simtracksters = []
-all_simtracksters = []
+        for ev in prange(num_events):
+            association_ev = association_f[ev]
+            simTrackstersCP_ev = simTrackstersCP_f[ev]
+            trackstersMerged_ev = trackstersMerged_f[ev]
+            recoToSim_mergeTracksterCP = association_ev.Mergetracksters_recoToSim_CP
+            recoToSim_mergeTracksterCP_score = association_ev.Mergetracksters_recoToSim_CP_score
+            recoToSim_mergeTracksterCP_sharedE = association_ev.Mergetracksters_recoToSim_CP_sharedE
+            recoToSim_mergeTracksterPU = association_ev.Mergetracksters_recoToSim_PU
+            recoToSim_mergeTracksterPU_score = association_ev.Mergetracksters_recoToSim_PU_score
+            recoToSim_mergeTracksterPU_sharedE = association_ev.Mergetracksters_recoToSim_PU_sharedE
 
-for f in range(len(association_data)):
-    association_f = association_data[f]
-    simTrackstersCP_f = simTrackstersCP_data[f]
-    trackstersMerged_f = trackstersMerged_data[f]
-#    for ev in tqdm(range(len(association_f))):
-    for ev in tqdm(range(200)):
-      association_ev = association_f[ev]
-      simTrackstersCP_ev = simTrackstersCP_f[ev]
-      trackstersMerged_ev = trackstersMerged_f[ev]
-      recoToSim_mergeTracksterCP = association_ev.Mergetracksters_recoToSim_CP
-      recoToSim_mergeTracksterCP_score = association_ev.Mergetracksters_recoToSim_CP_score
-      recoToSim_mergeTracksterCP_sharedE = association_ev.Mergetracksters_recoToSim_CP_sharedE
-      recoToSim_mergeTracksterPU = association_ev.Mergetracksters_recoToSim_PU
-      recoToSim_mergeTracksterPU_score = association_ev.Mergetracksters_recoToSim_PU_score
-      recoToSim_mergeTracksterPU_sharedE = association_ev.Mergetracksters_recoToSim_PU_sharedE
+            simToReco_mergeTracksterCP = association_ev.Mergetracksters_simToReco_CP
+            simToReco_mergeTracksterCP_score = association_ev.Mergetracksters_simToReco_CP_score
+            simToReco_mergeTracksterCP_sharedE = association_ev.Mergetracksters_simToReco_CP_sharedE
+            sts_inTrackster = np.zeros(len(trackstersMerged_ev.raw_energy)) 
+            for ri in range(len(association_ev.Mergetracksters_recoToSim_CP)):
+                hasSomeSignal = False
+                for si in range(len(association_ev.Mergetracksters_recoToSim_CP_score[ri])):
+                    score = association_ev.Mergetracksters_recoToSim_CP_score[ri][si]
+                    simIdx = association_ev.Mergetracksters_recoToSim_CP[ri][si]
+                    simVertices = simTrackstersCP_ev.vertices_indexes[si]
+                    recoVertices = trackstersMerged_ev.vertices_indexes[ri]
+                    common_vertices = set(simVertices) & set(recoVertices)
 
-      simToReco_mergeTracksterCP = association_ev.Mergetracksters_simToReco_CP
-      simToReco_mergeTracksterCP_score = association_ev.Mergetracksters_simToReco_CP_score
-      simToReco_mergeTracksterCP_sharedE = association_ev.Mergetracksters_simToReco_CP_sharedE
-      sts_inTrackster = np.zeros(len(trackstersMerged_ev.raw_energy)) 
+                    # Check additional condition
+                    if (association_ev.Mergetracksters_recoToSim_PU_sharedE[ri][0] / trackstersMerged_ev.raw_energy[ri] < 0.95):
+                        hasSomeSignal = True
+                        if score <= 0.6:
+                            sts_inTrackster[ri] += 1
 
-      #Fake and Merge Rate
-      for ri in range(len(recoToSim_mergeTracksterPU_score)):
-          stsInTrackster_i = np.array([])
-          hasSomeSignal = False
-          for si in range(len(recoToSim_mergeTracksterCP_score[ri])):
-             score = recoToSim_mergeTracksterCP_score[ri][si]
-             simIdx = recoToSim_mergeTracksterCP[ri][si]
-             simVertices = simTrackstersCP_ev.vertices_indexes[si]
-             recoVertices = trackstersMerged_ev.vertices_indexes[ri]
-             common_vertices = set(simVertices) & set(recoVertices)
-             if(recoToSim_mergeTracksterPU_sharedE[ri][0] / trackstersMerged_ev.raw_energy[ri] < 0.95):# and len(common_vertices) >= 2):
-               hasSomeSignal = True
-               if(score <= 0.6):
-                 sts_inTrackster[ri] += 1
-          if(hasSomeSignal == False):
-            sts_inTrackster[ri] = -1
+                if not hasSomeSignal:
+                    sts_inTrackster[ri] = -1
 
-      for ri, sts_in_ri in enumerate(sts_inTrackster):
-        if(sts_in_ri > -1):
-          tracksterReco = create_trackster(trackstersMerged_ev, ri)
-          all_tracksters.append(tracksterReco)
-          if(sts_in_ri == 0):
-            fake_tracksters.append(tracksterReco)
-          if(sts_in_ri > 1):
-            merged_tracksters.append(tracksterReco)
-      
-      # Efficiency and Purity
-      for si in range(len(simToReco_mergeTracksterCP)):
-          simEnergy = simTrackstersCP_ev.raw_energy[si]
-          sumSE = ak.sum(simToReco_mergeTracksterCP_sharedE[si])
-          argmaxShared = ak.argmax(simToReco_mergeTracksterCP_sharedE[si])
-          argminScore= ak.argmin(simToReco_mergeTracksterCP_score[si])
-          maxSE = simToReco_mergeTracksterCP_sharedE[si][argmaxShared]
-          minScore = simToReco_mergeTracksterCP_score[si][argminScore]
-          simTrackster = create_trackster(simTrackstersCP_ev, si)
-          all_simtracksters.append(simTrackster)
-          if(maxSE / simTrackster.energy >= 0.5):
-            efficient_simtracksters.append(simTrackster)
-          if(maxSE / sumSE >= 0.5):
-            efficient_simtracksters_corrected.append(simTrackster)
-          if(minScore <= 0.2):
-            pure_simtracksters.append(simTrackster)
+            for ri, sts_in_ri in enumerate(sts_inTrackster):
+                if sts_in_ri > -1:
+                    energyReco = trackstersMerged_ev.raw_energy[ri]
+                    xReco = trackstersMerged_ev.barycenter_x[ri]
+                    yReco = trackstersMerged_ev.barycenter_y[ri]
+                    zReco = trackstersMerged_ev.barycenter_z[ri]
+                    etaReco = trackstersMerged_ev.barycenter_eta[ri]
+                    phiReco = trackstersMerged_ev.barycenter_phi[ri]
+                    pointReco = np.array([xReco, yReco, zReco, etaReco, phiReco], dtype=np.float64)
+                    tracksterReco = create_trackster(trackstersMerged_ev, ri, ev)
+                    all_tracksters.append(tracksterReco)
+
+                    if sts_in_ri == 0:
+                        fake_tracksters.append(tracksterReco)
+                    elif sts_in_ri > 1:
+                        merged_tracksters.append(tracksterReco)
+        # Efficiency and Purity
+            for si in range(len(simToReco_mergeTracksterCP)):
+                simEnergy = simTrackstersCP_ev.raw_energy[si]
+                sharedSI= simToReco_mergeTracksterCP_sharedE[si]
+                sumSE = 0
+                for sE in sharedSI:
+                  sumSE += sE
+                argmaxShared = argmaxNumba(simToReco_mergeTracksterCP_sharedE[si])
+                argminScore= argminNumba(simToReco_mergeTracksterCP_score[si])
+                maxSE = simToReco_mergeTracksterCP_sharedE[si][argmaxShared]
+                minScore = simToReco_mergeTracksterCP_score[si][argminScore]
+                simTrackster = create_trackster(simTrackstersCP_ev, si, ev)
+                all_simtracksters.append(simTrackster)
+                if(maxSE / simTrackster.energy >= 0.5):
+                  efficient_simtracksters.append(simTrackster)
+                if(sumSE > 0.):
+                  if(maxSE / sumSE >= 0.5):
+                    efficient_simtracksters_corrected.append(simTrackster)
+                if(minScore <= 0.2):
+                  pure_simtracksters.append(simTrackster)
+    return fake_tracksters, merged_tracksters, all_tracksters, efficient_simtracksters, efficient_simtracksters_corrected, all_simtracksters, pure_simtracksters
 
 
-print(len(all_tracksters), len(fake_tracksters))
+
+fake_tracksters, merged_tracksters, all_tracksters, efficient_simtracksters, efficient_simtracksters_corrected, all_simtracksters, pure_simtracksters = process_event(association_data, simTrackstersCP_data, trackstersMerged_data)
+
+print(len(fake_tracksters), len(merged_tracksters), len(all_tracksters), len(efficient_simtracksters_corrected), len(efficient_simtracksters), len(all_simtracksters))
+
 create_efficiency_plots(fake_tracksters, all_tracksters, 1.5 , 3.0, 10, "eta", "Fake rate", "Fake Rate", 'fake')
 create_efficiency_plots(fake_tracksters, all_tracksters, -m.pi , m.pi, 10, "phi", "Fake rate", "Fake Rate",'fake')
 create_efficiency_plots(fake_tracksters, all_tracksters, 0 , 600, 20, "energy", "Fake rate", "Fake Rate", 'fake')
