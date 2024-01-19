@@ -28,8 +28,24 @@ class Trackster:
     self.eta = barycenter.eta
     self.phi = barycenter.phi
 
+def create_trackster(trackstersMerged_ev, ri):
+    energyReco = trackstersMerged_ev.raw_energy[ri]
+    xReco = trackstersMerged_ev.barycenter_x[ri]
+    yReco = trackstersMerged_ev.barycenter_y[ri]
+    zReco = trackstersMerged_ev.barycenter_z[ri]
+    etaReco = trackstersMerged_ev.barycenter_eta[ri]
+    phiReco = trackstersMerged_ev.barycenter_phi[ri]
+    
+    pointReco = np.array([xReco, yReco, zReco, etaReco, phiReco], dtype=np.float64)
+    
+    # Assuming Trackster is a class with appropriate constructor
+    point = Point3D(xReco, yReco, zReco, etaReco, phiReco)
+    tracksterReco = Trackster(energyReco,point, ri) 
+    
+    return tracksterReco
 
-def create_efficiency_plots(numerator_list, denominator_list, minX, maxX, bins, variable_name, yTitle, title):
+
+def create_efficiency_plots(numerator_list, denominator_list, minX, maxX, bins, variable_name, yTitle, title, plotName):
     # Create histograms for passing and total
     h_pass = ROOT.TH1F(f"hist_pass_{variable_name}", f"Passing {variable_name};{variable_name};Counts", bins, minX, maxX)
     h_total = ROOT.TH1F(f"hist_total_{variable_name}", f"Total {variable_name};{variable_name};Counts", bins, minX, maxX)
@@ -56,8 +72,8 @@ def create_efficiency_plots(numerator_list, denominator_list, minX, maxX, bins, 
     # Create Matplotlib plot
     fig = plt.figure(figsize = (15,10))
     plt.errorbar(x_values, y_values, yerr=[y_errors_low, y_errors_high], fmt='o', label='Efficiency')
-    plt.xlims(minX, maxX)
-    plt.ylims(0, 1)
+    plt.xlim(minX, maxX)
+    plt.ylim(0, 1)
     plt.xlabel(variable_name)
     plt.ylabel(yTitle)
     plt.title(title)
@@ -68,7 +84,7 @@ def create_efficiency_plots(numerator_list, denominator_list, minX, maxX, bins, 
         os.makedirs("./plots")
 
     # Save the plot
-    plot_filename = os.path.join("plots", f"efficiency_plot_{variable_name}.png")
+    plot_filename = os.path.join("plots", f"{plotName}_{variable_name}.png")
     plt.savefig(plot_filename)
 
 
@@ -103,6 +119,11 @@ for f in tqdm(files):
 fake_tracksters = []
 merged_tracksters = []
 all_tracksters = []
+efficient_simtracksters = []
+efficient_simtracksters_corrected = []
+pure_simtracksters = []
+all_simtracksters = []
+
 for f in range(len(association_data)):
     association_f = association_data[f]
     simTrackstersCP_f = simTrackstersCP_data[f]
@@ -118,15 +139,15 @@ for f in range(len(association_data)):
       recoToSim_mergeTracksterPU = association_ev.Mergetracksters_recoToSim_PU
       recoToSim_mergeTracksterPU_score = association_ev.Mergetracksters_recoToSim_PU_score
       recoToSim_mergeTracksterPU_sharedE = association_ev.Mergetracksters_recoToSim_PU_sharedE
-#      print(len(trackstersMerged_ev.raw_energy), len(recoToSim_mergeTracksterPU_score))
+
+      simToReco_mergeTracksterCP = association_ev.Mergetracksters_simToReco_CP
+      simToReco_mergeTracksterCP_score = association_ev.Mergetracksters_simToReco_CP_score
+      simToReco_mergeTracksterCP_sharedE = association_ev.Mergetracksters_simToReco_CP_sharedE
       sts_inTrackster = np.zeros(len(trackstersMerged_ev.raw_energy)) 
+
+      #Fake and Merge Rate
       for ri in range(len(recoToSim_mergeTracksterPU_score)):
           stsInTrackster_i = np.array([])
-#          for si in range(len(recoToSim_mergeTracksterPU_score[ri])):
-#            score = recoToSim_mergeTracksterPU_score[ri][si]
-#            simIdx = recoToSim_mergeTracksterPU[ri][si]
-#            if(score <= 0.6):
-#              sts_inTrackster[ri] += 1
           hasSomeSignal = False
           for si in range(len(recoToSim_mergeTracksterCP_score[ri])):
              score = recoToSim_mergeTracksterCP_score[ri][si]
@@ -143,25 +164,47 @@ for f in range(len(association_data)):
 
       for ri, sts_in_ri in enumerate(sts_inTrackster):
         if(sts_in_ri > -1):
-          energyReco = trackstersMerged_ev.raw_energy[ri]
-          xReco = trackstersMerged_ev.barycenter_x[ri]
-          yReco = trackstersMerged_ev.barycenter_y[ri]
-          zReco = trackstersMerged_ev.barycenter_z[ri]
-          etaReco = trackstersMerged_ev.barycenter_eta[ri]
-          phiReco = trackstersMerged_ev.barycenter_phi[ri]
-          pointReco = Point3D(xReco, yReco,zReco, etaReco,phiReco)
-          tracksterReco = Trackster(energyReco, pointReco, ri)
+          tracksterReco = create_trackster(trackstersMerged_ev, ri)
           all_tracksters.append(tracksterReco)
           if(sts_in_ri == 0):
             fake_tracksters.append(tracksterReco)
           if(sts_in_ri > 1):
             merged_tracksters.append(tracksterReco)
+      
+      # Efficiency and Purity
+      for si in range(len(simToReco_mergeTracksterCP)):
+          simEnergy = simTrackstersCP_ev.raw_energy[si]
+          sumSE = ak.sum(simToReco_mergeTracksterCP_sharedE[si])
+          argmaxShared = ak.argmax(simToReco_mergeTracksterCP_sharedE[si])
+          argminScore= ak.argmin(simToReco_mergeTracksterCP_score[si])
+          maxSE = simToReco_mergeTracksterCP_sharedE[si][argmaxShared]
+          minScore = simToReco_mergeTracksterCP_score[si][argminScore]
+          simTrackster = create_trackster(simTrackstersCP_ev, si)
+          all_simtracksters.append(simTrackster)
+          if(maxSE / simTrackster.energy >= 0.5):
+            efficient_simtracksters.append(simTrackster)
+          if(maxSE / sumSE >= 0.5):
+            efficient_simtracksters_corrected.append(simTrackster)
+          if(minScore <= 0.2):
+            pure_simtracksters.append(simTrackster)
 
 
 print(len(all_tracksters), len(fake_tracksters))
-create_efficiency_plots(fake_tracksters, all_tracksters, 1.5 , 3.0, 10, "eta", "Fake rate", "Fake Rate")
-create_efficiency_plots(fake_tracksters, all_tracksters, -m.pi , m.pi, 10, "phi", "Fake rate", "Fake Rate")
-create_efficiency_plots(fake_tracksters, all_tracksters, 0 , 600, 20, "energy", "Fake rate", "Fake Rate")
+create_efficiency_plots(fake_tracksters, all_tracksters, 1.5 , 3.0, 10, "eta", "Fake rate", "Fake Rate", 'fake')
+create_efficiency_plots(fake_tracksters, all_tracksters, -m.pi , m.pi, 10, "phi", "Fake rate", "Fake Rate",'fake')
+create_efficiency_plots(fake_tracksters, all_tracksters, 0 , 600, 20, "energy", "Fake rate", "Fake Rate", 'fake')
+
+create_efficiency_plots(efficient_simtracksters, all_simtracksters, 1.5 , 3.0, 10, "eta", "Efficiency", "Efficiency",'eff')
+create_efficiency_plots(efficient_simtracksters, all_simtracksters, -m.pi , m.pi, 10, "phi", "Efficiency", "Efficiency", 'eff')
+create_efficiency_plots(efficient_simtracksters, all_simtracksters, 0 , 600, 20, "energy", "Efficiency", "Efficiency", 'eff')
+
+create_efficiency_plots(efficient_simtracksters_corrected, all_simtracksters, 1.5 , 3.0, 10, "eta", "Efficiency", "Efficiency",'effCorr')
+create_efficiency_plots(efficient_simtracksters_corrected, all_simtracksters, -m.pi , m.pi, 10, "phi", "Efficiency", "Efficiency", 'effCorr')
+create_efficiency_plots(efficient_simtracksters_corrected, all_simtracksters, 0 , 600, 20, "energy", "Efficiency", "Efficiency", 'effCorr')
+
+create_efficiency_plots(pure_simtracksters, all_simtracksters, 1.5 , 3.0, 10, "eta", "Purity", "Purity", 'pur')
+create_efficiency_plots(pure_simtracksters, all_simtracksters, -m.pi , m.pi, 10, "phi", "Purity", "Purity", 'pur')
+create_efficiency_plots(pure_simtracksters, all_simtracksters, 0 , 600, 20, "energy", "Purity", "Purity", 'pur')
 
 
 
